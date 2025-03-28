@@ -69,7 +69,7 @@ grok-2
    -e NO_ROLE_PREFIX=false \
    -e SEARCH_RESULT_COMPATIBLE=false \
    --name pplx2api \
-   ghcr.io/yushangxiao/pplx2api:latest
+   ghcr.io/wenck/pplx2api:latest
  ```
  
  ### Docker Compose
@@ -78,7 +78,7 @@ grok-2
  version: '3'
  services:
    pplx2api:
-     image: ghcr.io/yushangxiao/pplx2api:latest
+     image: ghcr.io/wenck/pplx2api:latest
      container_name: pplx
      ports:
        - "8080:8080"

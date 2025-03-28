@@ -166,10 +166,10 @@ func NewClient(sessionToken string, proxy string, model string, openSerch bool) 
 	headers := map[string]string{
 		"accept-language": "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7,zh-TW;q=0.6",
 		"cache-control":   "no-cache",
-		"origin":          "https://www.perplexity.ai",
+		"origin":          "https://iboy.184198.xyz",
 		"pragma":          "no-cache",
 		"priority":        "u=1, i",
-		"referer":         "https://www.perplexity.ai/",
+		"referer":         "https://iboy.184198.xyz/",
 	}
 
 	for key, value := range headers {
@@ -242,7 +242,7 @@ func (c *Client) SendMessage(message string, stream bool, is_incognito bool, gc 
 	// Make the request
 	resp, err := c.client.R().DisableAutoReadResponse().
 		SetBody(requestBody).
-		Post("https://www.perplexity.ai/rest/sse/perplexity_ask")
+		Post("https://iboy.184198.xyz/rest/sse/perplexity_ask")
 
 	if err != nil {
 		if resp != nil && resp.Body != nil {
@@ -577,7 +577,7 @@ func (c *Client) createUploadURL(filename string, contentType string) (*UploadUR
 	}
 	resp, err := c.client.R().
 		SetBody(requestBody).
-		Post("https://www.perplexity.ai/rest/uploads/create_upload_url?version=2.18&source=default")
+		Post("https://iboy.184198.xyz/rest/uploads/create_upload_url?version=2.18&source=default")
 	if err != nil {
 		logger.Error(fmt.Sprintf("Error creating upload URL: %v", err))
 		return nil, err

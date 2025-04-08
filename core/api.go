@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"pplx2api/config"
 	"pplx2api/logger"
+	"pplx2api/model"
 	"pplx2api/utils"
 	"strings"
 	"time"
@@ -19,62 +20,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/imroc/req/v3"
 )
-
-// OpenAISrteamResponse defines OpenAI's streaming response structure
-type OpenAISrteamResponse struct {
-	ID      string         `json:"id"`
-	Object  string         `json:"object"`
-	Created int64          `json:"created"`
-	Model   string         `json:"model"`
-	Choices []StreamChoice `json:"choices"`
-}
-
-// StreamChoice represents a single choice in OpenAI's streaming response
-type StreamChoice struct {
-	Index        int         `json:"index"`
-	Delta        Delta       `json:"delta"`
-	Logprobs     interface{} `json:"logprobs"`
-	FinishReason interface{} `json:"finish_reason"`
-}
-
-// NoStreamChoice represents a single choice in OpenAI's non-streaming response
-type NoStreamChoice struct {
-	Index        int         `json:"index"`
-	Message      Message     `json:"message"`
-	Logprobs     interface{} `json:"logprobs"`
-	FinishReason string      `json:"finish_reason"`
-}
-
-// Delta structure stores the returned text content
-type Delta struct {
-	Content string `json:"content"`
-	Role    string `json:"role"`
-}
-
-// Message represents a message in the conversation
-type Message struct {
-	Role       string        `json:"role"`
-	Content    string        `json:"content"`
-	Refusal    interface{}   `json:"refusal"`
-	Annotation []interface{} `json:"annotation"`
-}
-
-// OpenAIResponse represents OpenAI's non-streaming response
-type OpenAIResponse struct {
-	ID      string           `json:"id"`
-	Object  string           `json:"object"`
-	Created int64            `json:"created"`
-	Model   string           `json:"model"`
-	Choices []NoStreamChoice `json:"choices"`
-	Usage   Usage            `json:"usage"`
-}
-
-// Usage represents token usage information
-type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
-}
 
 // Client represents a Perplexity API client
 type Client struct {
@@ -245,9 +190,6 @@ func (c *Client) SendMessage(message string, stream bool, is_incognito bool, gc 
 		Post("https://iboy.184198.xyz/rest/sse/perplexity_ask")
 
 	if err != nil {
-		if resp != nil && resp.Body != nil {
-			resp.Body.Close()
-		}
 		logger.Error(fmt.Sprintf("Error sending request: %v", err))
 		return 500, fmt.Errorf("request failed: %w", err)
 	}
@@ -277,22 +219,23 @@ func (c *Client) HandleResponse(body io.ReadCloser, stream bool, gc *gin.Context
 		gc.Writer.Header().Set("Connection", "keep-alive")
 		gc.Writer.WriteHeader(http.StatusOK)
 		gc.Writer.Flush()
-	} else {
-		gc.Writer.Header().Set("Content-Type", "application/json")
-		gc.Writer.Header().Set("Cache-Control", "no-cache")
-		gc.Writer.Header().Set("Connection", "keep-alive")
 	}
-
 	scanner := bufio.NewScanner(body)
+	clientDone := gc.Request.Context().Done()
 	// 增大缓冲区大小
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 	full_text := ""
-	responseID := uuid.New().String()
-	createdTime := time.Now().Unix()
 	inThinking := false
 	thinkShown := false
 	final := false
 	for scanner.Scan() {
+		select {
+		case <-clientDone:
+			logger.Info("Client connection closed")
+			return nil
+		default:
+		}
+
 		line := scanner.Text()
 		// Skip empty lines
 		if line == "" {
@@ -301,10 +244,8 @@ func (c *Client) HandleResponse(body io.ReadCloser, stream bool, gc *gin.Context
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
-		// Extract the data part
 		data := line[6:]
 		// logger.Info(fmt.Sprintf("Received data: %s", data))
-		// Try to parse as PerplexityResponse
 		var response PerplexityResponse
 		if err := json.Unmarshal([]byte(data), &response); err != nil {
 			logger.Error(fmt.Sprintf("Error parsing JSON: %v", err))
@@ -323,32 +264,7 @@ func (c *Client) HandleResponse(body io.ReadCloser, stream bool, gc *gin.Context
 					full_text += webResultsText
 
 					if stream {
-						// Send web results
-						openAIResp := &OpenAISrteamResponse{
-							ID:      responseID,
-							Object:  "chat.completion.chunk",
-							Created: createdTime,
-							Model:   "claude-3-7-sonnet-20250219",
-							Choices: []StreamChoice{
-								{
-									Index: 0,
-									Delta: Delta{
-										Content: webResultsText,
-									},
-									Logprobs:     nil,
-									FinishReason: nil,
-								},
-							},
-						}
-						jsonBytes, err := json.Marshal(openAIResp)
-						if err != nil {
-							logger.Error(fmt.Sprintf("Error marshalling JSON: %v", err))
-							return err
-						}
-						jsonBytes = append([]byte("data: "), jsonBytes...)
-						jsonBytes = append(jsonBytes, []byte("\n\n")...)
-						gc.Writer.Write(jsonBytes)
-						gc.Writer.Flush()
+						model.ReturnOpenAIResponse(webResultsText, stream, gc)
 					}
 				}
 			}
@@ -359,35 +275,7 @@ func (c *Client) HandleResponse(body io.ReadCloser, stream bool, gc *gin.Context
 				if !stream {
 					break
 				}
-				// Send model information
-				openAIResp := &OpenAISrteamResponse{
-					ID:      responseID,
-					Object:  "chat.completion.chunk",
-					Created: createdTime,
-					Model:   "claude-3-7-sonnet-20250219",
-					Choices: []StreamChoice{
-						{
-							Index: 0,
-							Delta: Delta{
-								Content: res_text,
-							},
-							Logprobs:     nil,
-							FinishReason: nil,
-						},
-					},
-				}
-				jsonBytes, err := json.Marshal(openAIResp)
-				if err != nil {
-					logger.Error(fmt.Sprintf("Error marshalling JSON: %v", err))
-					return err
-				}
-				// Add data: prefix and newlines
-				jsonBytes = append([]byte("data: "), jsonBytes...)
-				jsonBytes = append(jsonBytes, []byte("\n\n")...)
-
-				// Send data
-				gc.Writer.Write(jsonBytes)
-				gc.Writer.Flush()
+				model.ReturnOpenAIResponse(res_text, stream, gc)
 			}
 			break
 		}
@@ -413,35 +301,7 @@ func (c *Client) HandleResponse(body io.ReadCloser, stream bool, gc *gin.Context
 				if !stream {
 					continue
 				}
-				// Create OpenAI format response for text
-				openAIResp := &OpenAISrteamResponse{
-					ID:      responseID,
-					Object:  "chat.completion.chunk",
-					Created: createdTime,
-					Model:   "claude-3-7-sonnet-20250219",
-					Choices: []StreamChoice{
-						{
-							Index: 0,
-							Delta: Delta{
-								Content: res_text,
-							},
-							Logprobs:     nil,
-							FinishReason: nil,
-						},
-					},
-				}
-				jsonBytes, err := json.Marshal(openAIResp)
-				if err != nil {
-					logger.Error(fmt.Sprintf("Error marshalling JSON: %v", err))
-					return err
-				}
-				// Add data: prefix and newlines
-				jsonBytes = append([]byte("data: "), jsonBytes...)
-				jsonBytes = append(jsonBytes, []byte("\n\n")...)
-
-				// Send data
-				gc.Writer.Write(jsonBytes)
-				gc.Writer.Flush()
+				model.ReturnOpenAIResponse(res_text, stream, gc)
 			}
 			if block.MarkdownBlock != nil && len(block.MarkdownBlock.Chunks) > 0 {
 				res_text := ""
@@ -459,33 +319,7 @@ func (c *Client) HandleResponse(body io.ReadCloser, stream bool, gc *gin.Context
 				if !stream {
 					continue
 				}
-				// Create OpenAI format response for text
-				openAIResp := &OpenAISrteamResponse{
-					ID:      responseID,
-					Object:  "chat.completion.chunk",
-					Created: createdTime,
-					Model:   "claude-3-7-sonnet-20250219",
-					Choices: []StreamChoice{
-						{
-							Index: 0,
-							Delta: Delta{
-								Content: res_text,
-							},
-							Logprobs:     nil,
-							FinishReason: nil,
-						},
-					}}
-
-				jsonBytes, err := json.Marshal(openAIResp)
-				if err != nil {
-					logger.Error(fmt.Sprintf("Error marshalling JSON: %v", err))
-					return err
-				}
-				// Add data: prefix and newlines
-				jsonBytes = append([]byte("data: "), jsonBytes...)
-				jsonBytes = append(jsonBytes, []byte("\n\n")...)
-				gc.Writer.Write(jsonBytes)
-				gc.Writer.Flush()
+				model.ReturnOpenAIResponse(res_text, stream, gc)
 			}
 		}
 
@@ -496,39 +330,7 @@ func (c *Client) HandleResponse(body io.ReadCloser, stream bool, gc *gin.Context
 	}
 
 	if !stream {
-		// Create final response with all text for non-streaming mode
-		openAIResp := &OpenAIResponse{
-			ID:      responseID,
-			Object:  "chat.completion",
-			Created: createdTime,
-			Model:   "claude-3-7-sonnet-20250219",
-			Choices: []NoStreamChoice{
-				{
-					Index: 0,
-					Message: Message{
-						Role:       "assistant",
-						Content:    full_text,
-						Refusal:    nil,
-						Annotation: []interface{}{},
-					},
-					Logprobs:     nil,
-					FinishReason: "stop",
-				},
-			},
-			Usage: Usage{
-				PromptTokens:     0,
-				CompletionTokens: len(full_text) / 4, // Rough estimate
-				TotalTokens:      len(full_text) / 4,
-			},
-		}
-		jsonBytes, err := json.Marshal(openAIResp)
-		if err != nil {
-			logger.Error(fmt.Sprintf("Error NoStream marshalling JSON: %v", err))
-			return err
-		}
-
-		gc.Writer.Write(jsonBytes)
-		gc.Writer.Flush()
+		model.ReturnOpenAIResponse(full_text, stream, gc)
 	} else {
 		// Send end marker for streaming mode
 		gc.Writer.Write([]byte("data: [DONE]\n\n"))
@@ -737,4 +539,22 @@ func (c *Client) UploadText(context string) error {
 	}
 
 	return nil
+}
+
+func (c *Client) GetNewCookie() (string, error) {
+	resp, err := c.client.R().Get("https://www.perplexity.ai/api/auth/session")
+	if err != nil {
+		logger.Error(fmt.Sprintf("Error getting session cookie: %v", err))
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		logger.Error(fmt.Sprintf("Error getting session cookie: %s", resp.String()))
+		return "", fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+	for _, cookie := range resp.Cookies() {
+		if cookie.Name == "__Secure-next-auth.session-token" {
+			return cookie.Value, nil
+		}
+	}
+	return "", fmt.Errorf("session cookie not found")
 }

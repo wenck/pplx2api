@@ -112,10 +112,18 @@ func ChatCompletionsHandler(c *gin.Context) {
 	}
 	fmt.Println(prompt.String())                             // 输出最终构造的内容
 	fmt.Println("img_data_list_length:", len(img_data_list)) // 输出图片数据列表长度
+	var rootPrompt strings.Builder
+	rootPrompt.WriteString(prompt.String())
 	// 切号重试机制
 	var pplxClient *core.Client
+	index := config.Sr.NextIndex()
 	for i := 0; i < config.ConfigInstance.RetryCount; i++ {
-		session, err := config.ConfigInstance.GetSessionForModel(model)
+		if i > 0 {
+			prompt.Reset()
+			prompt.WriteString(rootPrompt.String())
+		}
+		index = (index + 1) % len(config.ConfigInstance.Sessions)
+		session, err := config.ConfigInstance.GetSessionForModel(index)
 		logger.Info(fmt.Sprintf("Using session for model %s: %s", model, session.SessionKey))
 		if err != nil {
 			logger.Error(fmt.Sprintf("Failed to get session for model %s: %v", model, err))
@@ -129,7 +137,7 @@ func ChatCompletionsHandler(c *gin.Context) {
 			if err != nil {
 				logger.Error(fmt.Sprintf("Failed to upload file: %v", err))
 				logger.Info("Retrying another session")
-				pplxClient = nil
+
 				continue
 			}
 		}
@@ -138,7 +146,7 @@ func ChatCompletionsHandler(c *gin.Context) {
 			if err != nil {
 				logger.Error(fmt.Sprintf("Failed to upload text: %v", err))
 				logger.Info("Retrying another session")
-				pplxClient = nil
+
 				continue
 			}
 			prompt.Reset()
@@ -147,10 +155,10 @@ func ChatCompletionsHandler(c *gin.Context) {
 		if _, err := pplxClient.SendMessage(prompt.String(), req.Stream, config.ConfigInstance.IsIncognito, c); err != nil {
 			logger.Error(fmt.Sprintf("Failed to send message: %v", err))
 			logger.Info("Retrying another session")
-			pplxClient = nil
+
 			continue // Retry on error
 		}
-		pplxClient = nil
+
 		return
 
 	}

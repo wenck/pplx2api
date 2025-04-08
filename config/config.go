@@ -18,8 +18,8 @@ type SessionInfo struct {
 }
 
 type SessionRagen struct {
-	index int
-	mutex sync.Mutex
+	Index int
+	Mutex sync.Mutex
 }
 
 type Config struct {
@@ -33,6 +33,7 @@ type Config struct {
 	NoRolePrefix           bool
 	SearchResultCompatible bool
 	PromptForFile          string
+	RwMutex                sync.RWMutex
 }
 
 // 解析 SESSION 格式的环境变量
@@ -44,6 +45,10 @@ func parseSessionEnv(envValue string) (int, []SessionInfo) {
 	sessionPairs := strings.Split(envValue, ",")
 	retryCount := len(sessionPairs) // 重试次数等于 session 数量
 	for _, pair := range sessionPairs {
+		if pair == "" {
+			retryCount--
+			continue
+		}
 		parts := strings.Split(pair, ":")
 		session := SessionInfo{
 			SessionKey: parts[0],
@@ -54,24 +59,13 @@ func parseSessionEnv(envValue string) (int, []SessionInfo) {
 }
 
 // 根据模型选择合适的 session
-func (c *Config) GetSessionForModel(model string) (SessionInfo, error) {
-	allSessions := c.Sessions
-
-	// 如果没有可用的 session，返回空
-	if len(allSessions) == 0 {
-		return SessionInfo{}, fmt.Errorf("no sessions available for model %s", model)
+func (c *Config) GetSessionForModel(idx int) (SessionInfo, error) {
+	if len(c.Sessions) == 0 || idx < 0 || idx >= len(c.Sessions) {
+		return SessionInfo{}, fmt.Errorf("invalid session index: %d", idx)
 	}
-
-	// 如果只有一个 session，直接返回
-	if len(allSessions) == 1 {
-		return allSessions[0], nil
-	}
-	// 如果有多个 session，选择下一个
-	Sr.mutex.Lock()
-	defer Sr.mutex.Unlock()
-	session := allSessions[Sr.index]
-	Sr.index = (Sr.index + 1) % len(allSessions)
-	return session, nil
+	c.RwMutex.RLock()
+	defer c.RwMutex.RUnlock()
+	return c.Sessions[idx], nil
 }
 
 // 从环境变量加载配置
@@ -107,6 +101,8 @@ func LoadConfig() *Config {
 		SearchResultCompatible: os.Getenv("SEARCH_RESULT_COMPATIBLE") == "true",
 		// 设置上传文件后的提示词
 		PromptForFile: promptForFile,
+		// 读写锁
+		RwMutex: sync.RWMutex{},
 	}
 
 	// 如果地址为空，使用默认值
@@ -119,13 +115,21 @@ func LoadConfig() *Config {
 var ConfigInstance *Config
 var Sr *SessionRagen
 
+func (sr *SessionRagen) NextIndex() int {
+	sr.Mutex.Lock()
+	defer sr.Mutex.Unlock()
+
+	index := sr.Index
+	sr.Index = (index + 1) % len(ConfigInstance.Sessions)
+	return index
+}
 func init() {
 	rand.Seed(time.Now().UnixNano())
 	// 加载环境变量
 	_ = godotenv.Load()
 	Sr = &SessionRagen{
-		index: 0,
-		mutex: sync.Mutex{},
+		Index: 0,
+		Mutex: sync.Mutex{},
 	}
 	ConfigInstance = LoadConfig()
 	logger.Info("Loaded config:")
